@@ -1,0 +1,45 @@
+﻿  Compiling CUDA source file kernel.cu...
+  
+  C:\Projects\Visual Studio\quadpic\quadpic\quadpic>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\bin\nvcc.exe" -gencode=arch=compute_61,code=\"sm_61,compute_61\" --use-local-env --cl-version 2017 -ccbin "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Tools\MSVC\14.11.25503\bin\HostX86\x64" -x cu -rdc=true -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\include"  -G   --keep-dir x64\Debug -maxrregcount=0  --machine 64 --compile -cudart static  -g   -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /FS /Zi /RTC1 /MT " -o x64\Debug\kernel.cu.obj "C:\Projects\Visual Studio\quadpic\quadpic\quadpic\kernel.cu" 
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(118): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(125): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(131): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(137): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(143): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(150): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(161): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(169): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(176): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(118): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(125): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(131): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(137): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(143): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(150): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(161): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(169): warning : transfer of control bypasses initialization of:
+C:/Projects/Visual Studio/quadpic/quadpic/quadpic/kernel.cu(176): warning : transfer of control bypasses initialization of:
+  kernel.cu
+  
+  C:\Projects\Visual Studio\quadpic\quadpic\quadpic>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\bin\nvcc.exe" -dlink -o x64\Debug\quadpic.device-link.obj -Xcompiler "/EHsc /W3 /nologo /Od /Zi /RTC1 /MT " -L"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\lib\x64" cudadevrt.lib cudart.lib kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib  -gencode=arch=compute_61,code=sm_61 -G --machine 64 x64\Debug\kernel.cu.obj 
+  cudadevrt.lib
+  cudart.lib
+  kernel32.lib
+  user32.lib
+  gdi32.lib
+  winspool.lib
+  comdlg32.lib
+  advapi32.lib
+  shell32.lib
+  ole32.lib
+  oleaut32.lib
+  uuid.lib
+  odbc32.lib
+  odbccp32.lib
+  kernel.cu.obj
+  quadpic.vcxproj -> C:\Projects\Visual Studio\quadpic\quadpic\x64\Debug\quadpic.exe
+  quadpic.vcxproj -> C:\Projects\Visual Studio\quadpic\quadpic\x64\Debug\quadpic.pdb (Partial PDB)
+  copy "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\bin\cudart*.dll" "C:\Projects\Visual Studio\quadpic\quadpic\x64\Debug\"
+  C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\bin\cudart32_91.dll
+  C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v9.1\bin\cudart64_91.dll
+          2 file(s) copied.
