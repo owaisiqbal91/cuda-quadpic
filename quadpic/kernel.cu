@@ -68,7 +68,6 @@ __global__ void getAverageKernel(const int *a, int *mutex, float* average, int q
 		if (threadIndex == 0) {
 			//int blockIndex = blockIdx.x + blockIdx.y*blockDim.x;
 			while (atomicCAS(mutex + quadNo, 0, 1) != 0);  //lock
-			printf("\nBlock sum is %d", sum[0]);
 			average[quadNo] += (float)sum[0] / ((quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1));
 			atomicExch(mutex + quadNo, 0);  //unlock
 		}
@@ -113,7 +112,10 @@ __global__ void getScoreAndPaintKernel(const int *a, int *mutex, float* average,
 		}
 
 		if (threadIndex == 0) {
+			//printf("\nError[0] %f", error[0]);
 			while (atomicCAS(mutex + quadNo, 0, 1) != 0);  //lock
+			//printf("\nBlock %d %d for quad %d error is %f", blockIdx.x, blockIdx.y, quadNo, error[0]);
+			//printf("\nQuad %d startX %d startY %d endX %d endY %d", quadNo, quadStartX, quadStartY, quadEndX, quadEndY);
 			score[quadNo] += error[0] / ((quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1));
 			atomicExch(mutex + quadNo, 0);  //unlock
 		}
@@ -199,28 +201,33 @@ __global__ void kernelToRuleThemAll(int *c, const int *a, int *mutex, float* ave
 	cudaStream_t s4;
 	cudaStreamCreateWithFlags(&s4, cudaStreamNonBlocking);
 
+	dim3 blockdim = dim3(2, 2);
 	int i;
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < 1; i++) {
 		int quadW = (quads[quadToSplit].endX - quads[quadToSplit].startX + 1) / 2;
 		int quadH = (quads[quadToSplit].endY - quads[quadToSplit].startY + 1) / 2;
+
+		//set grid dim
+		dim3 griddim = dim3(2, 2);
 
 		//QUAD 2
 		quads[currentTotalQuads].startX = quads[quadToSplit].startX + quadW; 
 		quads[currentTotalQuads].startY = quads[quadToSplit].startY;
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		//launch kernels for the quad index 1
+		getAverageKernel<<<griddim, blockdim, 0, s1>>>(a, mutex, average, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel<<<griddim, blockdim, 0, s1>>>(a, mutex, average, score, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
-		//launch kernels for the first quad
-		//TODO shared memory size
-		//getAverageKernel<<<dim3(4,4), dim3(4,4), 0, s1>>>(a, mutex, average, 1, 0, 0, 7, 7);
-		//getScoreAndPaintKernel<<<dim3(4, 4), dim3(4,4), 0, s1>>>(a, mutex, average, score, 1, 0, 0, 7, 7);
-		//TODO square root error and add to score
 
 		//QUAD 3
 		quads[currentTotalQuads].startX = quads[quadToSplit].startX;
 		quads[currentTotalQuads].startY = quads[quadToSplit].startY + quadH;
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		//launch kernels for the quad index 2
+		getAverageKernel <<<griddim, blockdim, 0, s2 >>>(a, mutex, average, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s2 >>>(a, mutex, average, score, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
 
 		//QUAD 4
@@ -228,35 +235,57 @@ __global__ void kernelToRuleThemAll(int *c, const int *a, int *mutex, float* ave
 		quads[currentTotalQuads].startY = quads[quadToSplit].startY + quadH;
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		//launch kernels for the quad index 3
+		getAverageKernel <<<griddim, blockdim, 0, s3 >>>(a, mutex, average, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s3 >>>(a, mutex, average, score, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
 
 		//QUAD 1
-//dnt need this->		//quads[quadToSplit].startX = quads[quadToSplit].startX; quads[quadToSplit].startY = quads[quadToSplit].startY;
 		quads[quadToSplit].endX = quads[quadToSplit].startX + quadW - 1; 
 		quads[quadToSplit].endY = quads[quadToSplit].startY + quadH - 1;
-
-		//TODO remove
-		quadToSplit = 0;
-
-		//TODO add scores to quad score array
+		//launch kernels for the quad index 3
+		getAverageKernel <<<griddim, blockdim, 0, s4 >>>(a, mutex, average, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s4 >>>(a, mutex, average, score, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
 
 		/*cudaStream_t s1;
 		cudaStreamCreateWithFlags(&s1, cudaStreamNonBlocking);*/
 
+		cudaDeviceSynchronize();
+		//TODO error calculation for rgb and add to score
+		printf("\n%f, %f, %f, %f", score[0], score[1], score[2], score[3]);
+		//quad 0
+		globalScores[quadToSplit] = sqrt(score[0]);
+		//quad 1
+		globalScores[currentTotalQuads-3] = sqrt(score[1]);
+		//quad 2
+		globalScores[currentTotalQuads-2] = sqrt(score[2]);
+		//quad 3
+		globalScores[currentTotalQuads-1] = sqrt(score[3]);
+
 		//find max
-		/*globalScores[0] = 1;
-		globalScores[1] = 2;
-		globalScores[2] = 3;
-		globalScores[3] = 4;
-		globalScores[4] = 5;
-		globalScores[5] = 6;
+		/*
 		getMaxScoreKernel << <4, 2 >> > (globalScores, maxScore, maxScoreIndex, 6, mutex);
 		cudaDeviceSynchronize();
 		printf("\nMax index is %d", maxScoreIndex[0]);*/
+		//TODO select index with max to split next
+		//quadToSplit = 0;
 
-		/*cudaDeviceSynchronize();
+		printf("\nQuad %d", 0);
+		printf("\nAverage is %f", average[0]);
+		printf("\nScore is %f", globalScores[quadToSplit]);
+		printf("\n");
+		printf("\nQuad %d", 1);
 		printf("\nAverage is %f", average[1]);
-		printf("\nScore is %f", score[1]);*/
+		printf("\nScore is %f", globalScores[currentTotalQuads - 3]);
+		printf("\n");
+		printf("\nQuad %d", 2);
+		printf("\nAverage is %f", average[2]);
+		printf("\nScore is %f", globalScores[currentTotalQuads - 2]);
+		printf("\n");
+		printf("\nQuad %d", 3);
+		printf("\nAverage is %f", average[3]);
+		printf("\nScore is %f", globalScores[currentTotalQuads - 1]);
+		printf("\n");
 	}
 
 	//delete this
@@ -289,6 +318,7 @@ int main()
 	for (id = 0; id < 64; id++) {
 		imageData[id] = id;
 	}
+	imageData[0] = 70;
     int c[rows*columns] = { 0 };
 
     // Add vectors in parallel.
@@ -433,3 +463,7 @@ Error:
 
 //one kernel to rule them all, app store near you
 // reduction, dynamic parallelism, streams
+//TODO set shared memory parameter for child kernel launches?
+//TODO setting of mutex variable for average/score kernels and for max kernel<--mutex[0]
+
+//for square images and power of 2 you dont need abs conditions -> will save branch predictions
