@@ -120,7 +120,7 @@ __global__ void getScoreAndPaintKernel(const int *a, int *mutex, float* average,
 	}
 }
 
-__global__ void getMaxScoreKernel(float* globalScores, int* maxScoreIndex, int currentTotalQuads) {
+__global__ void getMaxScoreKernel(float* globalScores, float* maxScore, int* maxScoreIndex, int currentTotalQuads, int *mutex) {
 	__shared__ float maxValues[512];
 	__shared__ int maxIndex[512];
 
@@ -159,7 +159,14 @@ __global__ void getMaxScoreKernel(float* globalScores, int* maxScoreIndex, int c
 		}
 
 		if (threadIdx.x == 0) {
-			printf("\nMax value is %f, %d", maxValues[0], maxIndex[0]);
+			//printf("\nMax value is %f, %d", maxValues[0], maxIndex[0]);
+
+			while (atomicCAS(mutex, 0, 1) != 0);  //lock
+			if (maxValues[0] > maxScore[0]) {
+				maxScore[0] = maxValues[0];
+				maxScoreIndex[0] = maxIndex[0];
+			}
+			atomicExch(mutex, 0);  //unlock
 		}
 	}
 }
@@ -172,30 +179,93 @@ __device__ struct quad {
 };
 
 
-__global__ void kernelToRuleThemAll(int *c, const int *a, int *mutex, float* average, float *score, float* globalScores, int* maxScoreIndex) {
+__global__ void kernelToRuleThemAll(int *c, const int *a, int *mutex, float* average, float *score, float* globalScores, float* maxScore, int* maxScoreIndex) {
 
 	quad quads[noOfQuads];
+	quads[0].startX = 0;
+	quads[0].startY = 0;
+	quads[0].endX = columns - 1;
+	quads[0].endY = rows - 1;
+
+	int quadToSplit = 0;
+	int currentTotalQuads = 1;
 
 	cudaStream_t s1;
 	cudaStreamCreateWithFlags(&s1, cudaStreamNonBlocking);
+	cudaStream_t s2;
+	cudaStreamCreateWithFlags(&s2, cudaStreamNonBlocking);
+	cudaStream_t s3;
+	cudaStreamCreateWithFlags(&s3, cudaStreamNonBlocking);
+	cudaStream_t s4;
+	cudaStreamCreateWithFlags(&s4, cudaStreamNonBlocking);
 
-	//TODO shared memory size
-	//getAverageKernel <<<dim3(4,4), dim3(4,4), 0, s1>>>(a, mutex, average, 1, 0, 0, 7, 7);
-	//getScoreAndPaintKernel << <dim3(4, 4), dim3(4,4), 0, s1>> >(a, mutex, average, score, 1, 0, 0, 7, 7);
-	//TODO remember to square root error
+	int i;
+	for (i = 0; i < 2; i++) {
+		int quadW = (quads[quadToSplit].endX - quads[quadToSplit].startX + 1) / 2;
+		int quadH = (quads[quadToSplit].endY - quads[quadToSplit].startY + 1) / 2;
 
-	//find max
-	globalScores[0] = 1;
-	globalScores[1] = 2;
-	globalScores[2] = 3;
-	globalScores[3] = 4;
-	globalScores[4] = 5;
-	globalScores[5] = 6;
-	getMaxScoreKernel<<<1, 8>>>(globalScores, maxScoreIndex, 6);
+		//QUAD 2
+		quads[currentTotalQuads].startX = quads[quadToSplit].startX + quadW; 
+		quads[currentTotalQuads].startY = quads[quadToSplit].startY;
+		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
+		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		currentTotalQuads++;
+		//launch kernels for the first quad
+		//TODO shared memory size
+		//getAverageKernel<<<dim3(4,4), dim3(4,4), 0, s1>>>(a, mutex, average, 1, 0, 0, 7, 7);
+		//getScoreAndPaintKernel<<<dim3(4, 4), dim3(4,4), 0, s1>>>(a, mutex, average, score, 1, 0, 0, 7, 7);
+		//TODO square root error and add to score
 
-	/*cudaDeviceSynchronize();
-	printf("\nAverage is %f", average[1]);
-	printf("\nScore is %f", score[1]);*/
+		//QUAD 3
+		quads[currentTotalQuads].startX = quads[quadToSplit].startX;
+		quads[currentTotalQuads].startY = quads[quadToSplit].startY + quadH;
+		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
+		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		currentTotalQuads++;
+
+		//QUAD 4
+		quads[currentTotalQuads].startX = quads[quadToSplit].startX + quadW;
+		quads[currentTotalQuads].startY = quads[quadToSplit].startY + quadH;
+		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
+		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
+		currentTotalQuads++;
+
+		//QUAD 1
+//dnt need this->		//quads[quadToSplit].startX = quads[quadToSplit].startX; quads[quadToSplit].startY = quads[quadToSplit].startY;
+		quads[quadToSplit].endX = quads[quadToSplit].startX + quadW - 1; 
+		quads[quadToSplit].endY = quads[quadToSplit].startY + quadH - 1;
+
+		//TODO remove
+		quadToSplit = 0;
+
+		//TODO add scores to quad score array
+
+		/*cudaStream_t s1;
+		cudaStreamCreateWithFlags(&s1, cudaStreamNonBlocking);*/
+
+		//find max
+		/*globalScores[0] = 1;
+		globalScores[1] = 2;
+		globalScores[2] = 3;
+		globalScores[3] = 4;
+		globalScores[4] = 5;
+		globalScores[5] = 6;
+		getMaxScoreKernel << <4, 2 >> > (globalScores, maxScore, maxScoreIndex, 6, mutex);
+		cudaDeviceSynchronize();
+		printf("\nMax index is %d", maxScoreIndex[0]);*/
+
+		/*cudaDeviceSynchronize();
+		printf("\nAverage is %f", average[1]);
+		printf("\nScore is %f", score[1]);*/
+	}
+
+	//delete this
+	/*int j = 0;
+	for (j = 0; j < currentTotalQuads; j++) {
+		printf("\nQuad[%d] : (%d, %d) to (%d, %d)", j, quads[j].startX, quads[j].startY, quads[j].endX, quads[j].endY);
+	}*/
+	/*getAverageKernel << <dim3(4, 4), dim3(4, 4), 0, s1 >> >(a, mutex, average, 1, 0, 0, 7, 7);
+	getScoreAndPaintKernel << <dim3(4, 4), dim3(4, 4), 0, s1 >> >(a, mutex, average, score, 1, 0, 0, 7, 7);*/
 }
 
 int main()
@@ -248,6 +318,7 @@ cudaError_t generateOutputWithCuda(int *c, const int *a, unsigned int size)
 	float *dev_average = 0;
 	float *dev_score = 0;
 	float *dev_globalScores = 0;
+	float *dev_maxScore = 0;
 	int *dev_maxScoreIndex = 0;
     cudaError_t cudaStatus;
 
@@ -295,6 +366,12 @@ cudaError_t generateOutputWithCuda(int *c, const int *a, unsigned int size)
 		goto Error;
 	}
 
+	cudaStatus = cudaMalloc((void**)&dev_maxScore, sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
 	cudaStatus = cudaMalloc((void**)&dev_maxScoreIndex, sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -309,7 +386,7 @@ cudaError_t generateOutputWithCuda(int *c, const int *a, unsigned int size)
     }
 
     // Launch a kernel on the GPU.
-	kernelToRuleThemAll << <1, 1 >> >(dev_c, dev_a, dev_mutex, dev_average, dev_score, dev_globalScores, dev_maxScoreIndex);
+	kernelToRuleThemAll << <1, 1 >> >(dev_c, dev_a, dev_mutex, dev_average, dev_score, dev_globalScores, dev_maxScore, dev_maxScoreIndex);
     //getAverageKernel<<<gridDim3, blockDim3>>>(dev_c, dev_a, dev_mutex, dev_average, 0);
 
     // Check for any errors launching the kernel
