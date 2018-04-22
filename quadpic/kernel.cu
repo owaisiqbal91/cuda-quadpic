@@ -1,23 +1,22 @@
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-//#include "Cimg.h"
+#include "Cimg.h"
 
 #include <stdio.h>
 
 #define noOfIterations 2500
 #define noOfQuads noOfIterations*3
 
-#define rows 32//image rows
-#define columns 32//image columns
-#define noOfThreadsInBlock 16
+#define rows 256//image rows
+#define columns 256//image columns
+#define noOfThreadsInBlock 1024
 //#define noOfBlocks 4
 #define noOfThreadInBlockBy2 noOfThreadsInBlock/2
 //#define gridDim3 dim3(noOfBlocks/2, noOfBlocks/2)
 //#define blockDim3 dim3(noOfThreadInBlockBy2, noOfThreadInBlockBy2)
 
-//using namespace cimg_library;
+using namespace cimg_library;
 
 cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int *aRed, const int *aGreen, const int *aBlue, unsigned int size);
 
@@ -31,36 +30,49 @@ __device__ int getAbsoluteIndex(int threadIndexX, int threadIndexY, int quadStar
 	return xIndexInGrid + yIndexInGrid*rows;
 }
 
-__global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* average, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY)
+__global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY)
 {
 	int threadAbsX = (threadIdx.x + blockDim.x*blockIdx.x) + quadStartX;
 	int threadAbsY = (threadIdx.y + blockDim.y*blockIdx.y) + quadStartY;
 
 	if (threadAbsX <= quadEndX && threadAbsY <= quadEndY /*&& blockIdx.x == 0 && blockIdx.y == 0*/) {
-		__shared__ int sum[noOfThreadInBlockBy2];
+		__shared__ int sumRed[noOfThreadInBlockBy2];
+		__shared__ int sumGreen[noOfThreadInBlockBy2];
+		__shared__ int sumBlue[noOfThreadInBlockBy2];
 		int index = getAbsoluteIndex(threadIdx.x, threadIdx.y, quadStartX, quadStartY);
 		int threadIndex = threadIdx.x + threadIdx.y*blockDim.x;//local 1d index into the block
 		int localKernelNoOfThreadsHalf = (blockDim.x * blockDim.y) / 2;
 		unsigned int i = localKernelNoOfThreadsHalf;
 		while (i != 0) {
 			if (threadIndex < i) {
+				int x2 = threadIdx.x;// + i) % blockDim.x;
+				int y2 = threadIdx.y + (i / blockDim.x);
+				int threadAbsX2 = (x2 + blockDim.x*blockIdx.x) + quadStartX;
+				int threadAbsY2 = (y2 + blockDim.y*blockIdx.y) + quadStartY;
 				if (i == localKernelNoOfThreadsHalf) {//first iteration
-
-					sum[threadIndex] = aRed[index];
-					//printf("\nSum[%d] = %d", threadIndex, index);
-					int x2 = threadIdx.x;// + i) % blockDim.x;
-					int y2 = threadIdx.y + (i / blockDim.x);
-					int threadAbsX2 = (x2 + blockDim.x*blockIdx.x) + quadStartX;
-					int threadAbsY2 = (y2 + blockDim.y*blockIdx.y) + quadStartY;
+					/*printf("\nblockdim %d", blockDim.x);
+					if (blockDim.x == 16) 
+						printf("\n16x16 %d %d", threadIndex, threadIndex + i);*/
+					sumRed[threadIndex] = 0;
+					sumRed[threadIndex] = aRed[index];
+					sumGreen[threadIndex] = aGreen[index];
+					sumBlue[threadIndex] = aBlue[index];
 					if (threadAbsX2 <= quadEndX && threadAbsY2 <= quadEndY) {
 						int index2 = getAbsoluteIndex(x2, y2, quadStartX, quadStartY);
 
-						sum[threadIndex] += aRed[index2];
+						sumRed[threadIndex] += aRed[index2];
+						sumGreen[threadIndex] += aGreen[index2];
+						sumBlue[threadIndex] += aBlue[index2];
 						//printf("\nSum[%d] 2nd = %d, threadIdy: %d, i: %d, blockDimy: %d, calc: %d, y2: %d", threadIndex, index2, threadIdx.y, i, blockDim.x, (i+threadIdx.y)/blockDim.x, y2);
 					}
 				}
 				else {
-					sum[threadIndex] += sum[threadIndex + i];
+					if (threadAbsX2 <= quadEndX && threadAbsY2 <= quadEndY) {
+						//if (blockDim.x == 16) printf("\n16x16 %d %d", threadIndex, threadIndex+i);
+						sumRed[threadIndex] += sumRed[threadIndex + i];
+						sumGreen[threadIndex] += sumGreen[threadIndex + i];
+						sumBlue[threadIndex] += sumBlue[threadIndex + i];
+					}
 				}
 
 			}
@@ -71,31 +83,42 @@ __global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *
 
 		if (threadIndex == 0) {
 			//int blockIndex = blockIdx.x + blockIdx.y*blockDim.x;
+			int totalInQuad = (quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1);
 			while (atomicCAS(mutex + quadNo, 0, 1) != 0);  //lock
-			average[quadNo] += (float)sum[0] / ((quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1));
+			averageRed[quadNo] += (float)sumRed[0] / totalInQuad;
+			averageGreen[quadNo] += (float)sumGreen[0] / totalInQuad;
+			averageBlue[quadNo] += (float)sumBlue[0] / totalInQuad;
 			atomicExch(mutex + quadNo, 0);  //unlock
 		}
 	}
 }
 
-__global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const int *aBlue, int *cRed, int *cGreen, int *cBlue, int *mutex, float* average, float* score, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY) {
+__global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const int *aBlue, int *cRed, int *cGreen, int *cBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, float* scoreRed, float* scoreGreen, float* scoreBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY) {
 
 	int threadAbsX = (threadIdx.x + blockDim.x*blockIdx.x) + quadStartX;
 	int threadAbsY = (threadIdx.y + blockDim.y*blockIdx.y) + quadStartY;
 
 	if (threadAbsX <= quadEndX && threadAbsY <= quadEndY) {
-		__shared__ float error[noOfThreadInBlockBy2];
+		__shared__ float errorRed[noOfThreadInBlockBy2];
+		__shared__ float errorGreen[noOfThreadInBlockBy2];
+		__shared__ float errorBlue[noOfThreadInBlockBy2];
 		int index = getAbsoluteIndex(threadIdx.x, threadIdx.y, quadStartX, quadStartY);
 		int threadIndex = threadIdx.x + threadIdx.y*blockDim.x;//local 1d index into the block
 		int localKernelNoOfThreadsHalf = (blockDim.x * blockDim.y) / 2;
 		unsigned int i = localKernelNoOfThreadsHalf;
-		float avg = average[quadNo];
-		cRed[index] = avg;
+		int avgGreen = averageGreen[quadNo];
+		cGreen[index] = avgGreen;
+		int avgBlue = averageBlue[quadNo];
+		cBlue[index] = avgBlue;
+		int avgRed = averageRed[quadNo];
+		cRed[index] = avgRed;
 		while (i != 0) {
 			if (threadIndex < i) {
 				if (i == localKernelNoOfThreadsHalf) {//first iteration
 
-					error[threadIndex] = pow(aRed[index] - avg, 2);
+					errorGreen[threadIndex] = pow((float)aGreen[index] - avgGreen, (float)2);
+					errorBlue[threadIndex] = pow((float)aBlue[index] - avgBlue, (float)2);
+					errorRed[threadIndex] = pow((float)aRed[index] - avgRed, (float)2);
 
 					int x2 = threadIdx.x;// + i) % blockDim.x;
 					int y2 = threadIdx.y + (i / blockDim.x);
@@ -103,11 +126,15 @@ __global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const
 					int threadAbsY2 = (y2 + blockDim.y*blockIdx.y) + quadStartY;
 					if (threadAbsX2 <= quadEndX && threadAbsY2 <= quadEndY) {
 						int index2 = getAbsoluteIndex(x2, y2, quadStartX, quadStartY);
-						error[threadIndex] += pow(aRed[index2] - avg, 2);
+						errorGreen[threadIndex] += pow((float)aGreen[index2] - avgGreen, (float)2);
+						errorBlue[threadIndex] += pow((float)aBlue[index2] - avgBlue, (float)2);
+						errorRed[threadIndex] += pow((float)aRed[index2] - avgRed, (float)2);
 					}
 				}
 				else {
-					error[threadIndex] += error[threadIndex + i];
+					errorGreen[threadIndex] += errorGreen[threadIndex + i];
+					errorBlue[threadIndex] += errorBlue[threadIndex + i];
+					errorRed[threadIndex] += errorRed[threadIndex + i];
 				}
 
 			}
@@ -117,11 +144,13 @@ __global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const
 		}
 
 		if (threadIndex == 0) {
-			//printf("\nError[0] %f", error[0]);
+			int totalInQuad = (quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1);
+			/*if (quadNo == 0)
+				printf("errorGreen %f", errorGreen[0]);*/
 			while (atomicCAS(mutex + quadNo, 0, 1) != 0);  //lock
-			//printf("\nBlock %d %d for quad %d error is %f", blockIdx.x, blockIdx.y, quadNo, error[0]);
-			//printf("\nQuad %d startX %d startY %d endX %d endY %d", quadNo, quadStartX, quadStartY, quadEndX, quadEndY);
-			score[quadNo] += error[0] / ((quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1));
+			scoreRed[quadNo] += errorRed[0] / totalInQuad;
+			scoreGreen[quadNo] += errorGreen[0] / totalInQuad;
+			scoreBlue[quadNo] += errorBlue[0] / totalInQuad;
 			atomicExch(mutex + quadNo, 0);  //unlock
 		}
 	}
@@ -141,25 +170,36 @@ __global__ void getMaxScoreKernel(float* globalScores, float* maxScore, int* max
 			if (threadIdx.x < i) {
 				if (i == localKernelNoOfThreadsHalf) {//first iteration
 
+					//printf("\nThread global index %d, thread index %d, i %d", threadGlobalIndex, threadIdx.x, i);
 					maxValues[threadIdx.x] = globalScores[threadGlobalIndex];
 					maxIndex[threadIdx.x] = threadGlobalIndex;
 
 					int threadGlobalIndex2 = threadGlobalIndex + i;
+					//printf("\nGlobalIndex2 %d value2 %f", threadGlobalIndex2, globalScores[threadGlobalIndex2]);
 					
 					if (threadGlobalIndex2 < currentTotalQuads) {
+						//printf("\nComparing globalScores[%d](%f) with globalScores[%d](%f)", threadGlobalIndex, globalScores[threadGlobalIndex], threadGlobalIndex2, globalScores[threadGlobalIndex2]);
 						if (globalScores[threadGlobalIndex2] > maxValues[threadIdx.x]) {
+							//printf("\nValue %f  > %f, index ", globalScores[threadGlobalIndex2], maxValues[threadIdx.x]);
 							maxValues[threadIdx.x] = globalScores[threadGlobalIndex2];
 							maxIndex[threadIdx.x] = threadGlobalIndex2;
 						}
 					}
 				}
 				else {
-					if (maxValues[threadIdx.x + i] > maxValues[threadIdx.x]) {
-						maxValues[threadIdx.x] = maxValues[threadIdx.x + i];
-						maxIndex[threadIdx.x] = maxIndex[threadIdx.x + i];
+					//printf("\nComparing values (%f) with (%f) for index %d", maxValues[threadIdx.x], maxValues[threadIdx.x + i], i);
+					if (threadGlobalIndex + i < currentTotalQuads){
+						if (maxValues[threadIdx.x + i] > maxValues[threadIdx.x]) {
+							//printf("\nValue %f  > %f, index ", maxValues[threadIdx.x + i], maxValues[threadIdx.x]);
+							//printf("\nComparing m[%d](%f) with globalScores[%d](%f)", threadGlobalIndex, globalScores[threadGlobalIndex], threadGlobalIndex2, globalScores[threadGlobalIndex2]);
+							maxValues[threadIdx.x] = maxValues[threadIdx.x + i];
+							maxIndex[threadIdx.x] = maxIndex[threadIdx.x + i];
+						}
 					}
 				}
 			}
+
+			//printf("\n------------------------------");
 
 			__syncthreads();
 			i /= 2;
@@ -186,7 +226,7 @@ __device__ struct quad {
 };
 
 
-__global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* average, float *score, float* globalScores, float* maxScore, int* maxScoreIndex) {
+__global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, float *scoreRed, float *scoreGreen, float *scoreBlue, float* globalScores, float* maxScore, int* maxScoreIndex) {
 
 	quad quads[noOfQuads];
 	quads[0].startX = 0;
@@ -206,29 +246,51 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 	cudaStream_t s4;
 	cudaStreamCreateWithFlags(&s4, cudaStreamNonBlocking);
 
-	const int blockDimSize = 2;
+	int blockDimSize = 32;
 	dim3 blockdim = dim3(blockDimSize, blockDimSize);
 	int i;
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < 20; i++) {
 		//printf("\n\n----------------New SPLIT -----------------");
 		int quadW = (quads[quadToSplit].endX - quads[quadToSplit].startX + 1) / 2;
 		int quadH = (quads[quadToSplit].endY - quads[quadToSplit].startY + 1) / 2;
 
+		blockDimSize = 32;
+		if (quadW < blockDimSize)
+			blockDimSize = quadW;
+
+		blockdim = dim3(blockDimSize, blockDimSize);
+
 		//set grid dim
 		int gridDimSize = quadW / blockDimSize;
-		gridDimSize = gridDimSize == 0? 1: gridDimSize;
-		//printf("\nGrid dim size %d, Quad w & height %d %d", gridDimSize, quadW, quadH);
+		gridDimSize = gridDimSize == 0 ? 1 : gridDimSize;
+		printf("\nGrid dim size %d, block size %d, Quad w & height %d %d", gridDimSize, blockDimSize, quadW, quadH);
 		dim3 griddim = dim3(gridDimSize, gridDimSize);//will have to use ceil function for non multiple of blockdim
 
 		//reset working variables
-		score[0] = 0;
-		score[1] = 0;
-		score[2] = 0;
-		score[3] = 0;
-		average[0] = 0;
-		average[1] = 0;
-		average[2] = 0;
-		average[3] = 0;
+		scoreRed[0] = 0;
+		scoreRed[1] = 0;
+		scoreRed[2] = 0;
+		scoreRed[3] = 0;
+		scoreGreen[0] = 0;
+		scoreGreen[1] = 0;
+		scoreGreen[2] = 0;
+		scoreGreen[3] = 0;
+		scoreBlue[0] = 0;
+		scoreBlue[1] = 0;
+		scoreBlue[2] = 0;
+		scoreBlue[3] = 0;
+		averageRed[0] = 0;
+		averageRed[1] = 0;
+		averageRed[2] = 0;
+		averageRed[3] = 0;
+		averageGreen[0] = 0;
+		averageGreen[1] = 0;
+		averageGreen[2] = 0;
+		averageGreen[3] = 0;
+		averageBlue[0] = 0;
+		averageBlue[1] = 0;
+		averageBlue[2] = 0;
+		averageBlue[3] = 0;
 		maxScore[0] = 0;
 		maxScoreIndex[0] = 0;
 
@@ -238,10 +300,9 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
 		//launch kernels for the quad index 1
-		getAverageKernel<<<griddim, blockdim, 0, s1>>>(aRed, aGreen, aBlue, mutex, average, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
-		getScoreAndPaintKernel<<<griddim, blockdim, 0, s1>>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, average, score, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getAverageKernel<<<griddim, blockdim, 0, s1>>>(aRed, aGreen, aBlue, mutex, averageRed, averageGreen, averageBlue, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel<<<griddim, blockdim, 0, s1>>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, averageRed, averageGreen, averageBlue, scoreRed, scoreGreen, scoreBlue, 1, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
-		printf("\nstartx %d, starty %d,   endx %d, endy %d", quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 
 		//QUAD 3
 		quads[currentTotalQuads].startX = quads[quadToSplit].startX;
@@ -249,8 +310,8 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
 		//launch kernels for the quad index 2
-		getAverageKernel <<<griddim, blockdim, 0, s2 >>>(aRed, aGreen, aBlue, mutex, average, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
-		getScoreAndPaintKernel <<<griddim, blockdim, 0, s2 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, average, score, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getAverageKernel <<<griddim, blockdim, 0, s2 >>>(aRed, aGreen, aBlue, mutex, averageRed, averageGreen, averageBlue, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s2 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, averageRed, averageGreen, averageBlue, scoreRed, scoreGreen, scoreBlue, 2, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
 
 		//QUAD 4
@@ -259,61 +320,78 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 		quads[currentTotalQuads].endX = quads[currentTotalQuads].startX + quadW - 1;
 		quads[currentTotalQuads].endY = quads[currentTotalQuads].startY + quadH - 1;
 		//launch kernels for the quad index 3
-		getAverageKernel <<<griddim, blockdim, 0, s3 >>>(aRed, aGreen, aBlue, mutex, average, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
-		getScoreAndPaintKernel <<<griddim, blockdim, 0, s3 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, average, score, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getAverageKernel <<<griddim, blockdim, 0, s3 >>>(aRed, aGreen, aBlue, mutex, averageRed, averageGreen, averageBlue, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s3 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, averageRed, averageGreen, averageBlue, scoreRed, scoreGreen, scoreBlue, 3, quads[currentTotalQuads].startX, quads[currentTotalQuads].startY, quads[currentTotalQuads].endX, quads[currentTotalQuads].endY);
 		currentTotalQuads++;
 
 		//QUAD 1
 		quads[quadToSplit].endX = quads[quadToSplit].startX + quadW - 1; 
 		quads[quadToSplit].endY = quads[quadToSplit].startY + quadH - 1;
 		//launch kernels for the quad index 3
-		getAverageKernel <<<griddim, blockdim, 0, s4 >>>(aRed, aGreen, aBlue, mutex, average, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
-		getScoreAndPaintKernel <<<griddim, blockdim, 0, s4 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, average, score, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
+		getAverageKernel <<<griddim, blockdim, 0, s4 >>>(aRed, aGreen, aBlue, mutex, averageRed, averageGreen, averageBlue, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
+		getScoreAndPaintKernel <<<griddim, blockdim, 0, s4 >>>(aRed, aGreen, aBlue, cRed, cGreen, cBlue, mutex, averageRed, averageGreen, averageBlue, scoreRed, scoreGreen, scoreBlue, 0, quads[quadToSplit].startX, quads[quadToSplit].startY, quads[quadToSplit].endX, quads[quadToSplit].endY);
 
 		cudaDeviceSynchronize();
-		//TODO error calculation for rgb and add to score
-		printf("\n%f, %f, %f, %f", score[0], score[1], score[2], score[3]);
 		//quad 0
-		globalScores[quadToSplit] = sqrt(score[0]);
+		printf("\nRed avg %f", averageRed[0]);
+		printf("\nGreen avg %f", averageGreen[0]);
+		printf("\nBlue avg %f", averageBlue[0]);
+		printf("\nRed error %f", sqrt(scoreRed[0]));
+		printf("\nGreen error %f", sqrt(scoreGreen[0]));
+		printf("\nBlue error %f", sqrt(scoreBlue[0]));
+		globalScores[quadToSplit] = (sqrt(scoreRed[0])*0.3) + (sqrt(scoreGreen[0])*0.6) + (sqrt(scoreBlue[0])*0.11);
+		globalScores[quadToSplit] *= powf(quadH*quadW, 0.25);
 		//quad 1
-		globalScores[currentTotalQuads-3] = sqrt(score[1]);
+		globalScores[currentTotalQuads-3] = (sqrt(scoreRed[1])*0.3) + (sqrt(scoreGreen[1])*0.6) + (sqrt(scoreBlue[1])*0.11);
+		globalScores[currentTotalQuads - 3] *= powf(quadH*quadW, 0.25);
 		//quad 2
-		globalScores[currentTotalQuads-2] = sqrt(score[2]);
+		globalScores[currentTotalQuads-2] = (sqrt(scoreRed[2])*0.3) + (sqrt(scoreGreen[2])*0.6) + (sqrt(scoreBlue[2])*0.11);
+		globalScores[currentTotalQuads - 2] *= powf(quadH*quadW, 0.25);
 		//quad 3
-		globalScores[currentTotalQuads-1] = sqrt(score[3]);
+		globalScores[currentTotalQuads-1] = (sqrt(scoreRed[3])*0.3) + (sqrt(scoreGreen[3])*0.6) + (sqrt(scoreBlue[3])*0.11);
+		globalScores[currentTotalQuads - 1] *= powf(quadH*quadW, 0.25);
+		//printf("\nScores: %f, %f, %f, %f", globalScores[quadToSplit], globalScores[currentTotalQuads - 3], globalScores[currentTotalQuads - 2], globalScores[currentTotalQuads - 1]);
+
+		int h;
+		printf("\nScores ");
+		for (h = 0; h < currentTotalQuads; h++) {
+			printf("%f ", globalScores[h]);
+		}
 
 		//find max
-		int maxKernelBlockSize = currentTotalQuads > 1024? 1024 : currentTotalQuads;
+		int maxKernelBlockSize = 1024;// currentTotalQuads > 1024 ? 1024 : currentTotalQuads;
+		maxKernelBlockSize = maxKernelBlockSize % 2 == 0 ? maxKernelBlockSize : maxKernelBlockSize + 1;
 		int maxKernelGridSize = ceil((float)currentTotalQuads /1024);
-		getMaxScoreKernel <<<maxKernelGridSize, maxKernelBlockSize>>> (globalScores, maxScore, maxScoreIndex, 6, mutex);
+		getMaxScoreKernel <<<maxKernelGridSize, maxKernelBlockSize>>> (globalScores, maxScore, maxScoreIndex, currentTotalQuads, mutex);
 		cudaDeviceSynchronize();
 		printf("\nMax index is %d, max is %f", maxScoreIndex[0], globalScores[maxScoreIndex[0]]);
 		//TODO select index with max to split next
-		if (maxScoreIndex[0] != 0) {
-			quadToSplit = currentTotalQuads - (4 - maxScoreIndex[0]);
-		}
+		//if (maxScoreIndex[0] != 0) {
+		quadToSplit = maxScoreIndex[0];// currentTotalQuads - (4 - maxScoreIndex[0]);
+			printf("\nQuadToSplit is %d", quadToSplit);
+		//}
 
-		printf("\nQuad %d", 0);
-		printf("\nAverage is %f", average[0]);
+		/*printf("\nQuad %d", 0);
+		printf("\nAverage is %f", averageGreen[0]);
 		printf("\nScore is %f", globalScores[quadToSplit]);
 		printf("\n");
 		printf("\nQuad %d", 1);
-		printf("\nAverage is %f", average[1]);
+		printf("\nAverage is %f", averageGreen[1]);
 		printf("\nScore is %f", globalScores[currentTotalQuads - 3]);
 		printf("\n");
 		printf("\nQuad %d", 2);
-		printf("\nAverage is %f", average[2]);
+		printf("\nAverage is %f", averageGreen[2]);
 		printf("\nScore is %f", globalScores[currentTotalQuads - 2]);
 		printf("\n");
 		printf("\nQuad %d", 3);
-		printf("\nAverage is %f", average[3]);
-		printf("\nScore is %f", globalScores[currentTotalQuads - 1]);
+		printf("\nAverage is %f", averageGreen[3]);
+		printf("\nScore is %f", globalScores[currentTotalQuads - 1]);*/
 		printf("\n");
 
-		int k = 0;
+		/*int k = 0;
 		for (k = 0; k < 256; k++) {
-			printf("\n%d", cRed[k]);
-		}
+			printf("\n%d %d %d", cRed[k], cGreen[k], cBlue[k]);
+		}*/
 	}
 
 	//delete this
@@ -331,12 +409,22 @@ int main()
 	);
 	printf("\nCUDA FREE: %zu, TOTAL %zu", free, total);*/
 
-	//CImg<unsigned char> image("C:\\Projects\\Visual Studio\\quadpic\\quadpic\\o.bmp");
+	CImg<unsigned char> image("C:\\Projects\\Visual Studio\\quadpic\\quadpic\\mandl.bmp");
 
-	/*CImg<float> src("image.jpg");
-	int width = src.width();
-	int height = src.height();
-	unsigned char* ptr = src.data(10, 10);*/
+	int v, b;
+	int count = 0;
+	int *indataR = new int[rows * columns];
+	int *indataG = new int[rows * columns];
+	int *indataB = new int[rows * columns];
+	for (v = 0; v < rows; v++) {
+		for (b = 0; b < columns; b++) {
+
+			indataR[count] = image(b, v, 0, 0);
+			indataG[count] = image(b, v, 0, 1);
+			indataB[count] = image(b, v, 0, 2);
+			count++;
+		}
+	}
 
     const int arraySize = rows*columns;
     /*const int imageData[arraySize] = { 0, 1,	4, 5,
@@ -346,7 +434,7 @@ int main()
 									   10, 11,	14, 15,
 									};*/
 
-	int imageDataR[1024];
+	/*int imageDataR[1024];
 	int id;
 	for (id = 0; id < 1024; id++) {
 		imageDataR[id] = id;
@@ -358,15 +446,15 @@ int main()
 	int imageDataB[1024];
 	for (id = 0; id < 1024; id++) {
 		imageDataB[id] = id;
-	}
+	}*/
 
 
-    int cRed[rows*columns] = { 0 };
-	int cGreen[rows*columns] = { 0 };
-	int cBlue[rows*columns] = { 0 };
+	int *cRed = new int[rows*columns];
+	int *cGreen = new int[rows*columns];
+	int *cBlue = new int[rows*columns];
 
     // Add vectors in parallel.
-    cudaError_t cudaStatus = generateOutputWithCuda(cRed, cGreen, cBlue, imageDataR, imageDataG, imageDataB, arraySize);
+    cudaError_t cudaStatus = generateOutputWithCuda(cRed, cGreen, cBlue, indataR, indataG, indataB, arraySize);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "generateOutputWithCuda failed!");
         return 1;
@@ -379,6 +467,19 @@ int main()
         fprintf(stderr, "cudaDeviceReset failed!");
         return 1;
     }
+
+	count = 0;
+	for (v = 0; v < 256; v++) {
+		for (b = 0; b < 256; b++) {
+			const unsigned char color[] = { cRed[count], cGreen[count], cBlue[count] };
+			//printf("\nCDATA %d %d %d", cRed[count], cGreen[count], cBlue[count]);
+			image.draw_point(b, v, 0, color, 1);
+
+			count++;
+		}
+	}
+
+	image.display("ASD");
 
     return 0;
 }
@@ -395,8 +496,12 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
 	int *dev_cBlue = 0;
 
 	int *dev_mutex = 0;
-	float *dev_average = 0;
-	float *dev_score = 0;
+	float *dev_averageRed = 0;
+	float *dev_averageGreen = 0;
+	float *dev_averageBlue = 0;
+	float *dev_scoreRed = 0;
+	float *dev_scoreGreen = 0;
+	float *dev_scoreBlue = 0;
 
 	float *dev_globalScores = 0;
 	float *dev_maxScore = 0;
@@ -453,13 +558,37 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&dev_average, 4 * sizeof(float));
+	cudaStatus = cudaMalloc((void**)&dev_averageRed, 4 * sizeof(float));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&dev_score, 4 * sizeof(float));
+	cudaStatus = cudaMalloc((void**)&dev_averageGreen, 4 * sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMalloc((void**)&dev_averageBlue, 4 * sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMalloc((void**)&dev_scoreRed, 4 * sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMalloc((void**)&dev_scoreGreen, 4 * sizeof(float));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	cudaStatus = cudaMalloc((void**)&dev_scoreBlue, 4 * sizeof(float));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
@@ -503,7 +632,7 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
 	}
 
     // Launch a kernel on the GPU.
-	kernelToRuleThemAll << <1, 1 >> >(dev_cRed, dev_cGreen, dev_cBlue, dev_aRed, dev_aBlue, dev_aGreen, dev_mutex, dev_average, dev_score, dev_globalScores, dev_maxScore, dev_maxScoreIndex);
+	kernelToRuleThemAll << <1, 1 >> >(dev_cRed, dev_cGreen, dev_cBlue, dev_aRed, dev_aGreen, dev_aBlue, dev_mutex, dev_averageRed, dev_averageGreen, dev_averageBlue, dev_scoreRed, dev_scoreGreen, dev_scoreBlue, dev_globalScores, dev_maxScore, dev_maxScoreIndex);
     //getAverageKernel<<<gridDim3, blockDim3>>>(dev_c, dev_a, dev_mutex, dev_average, 0);
 
     // Check for any errors launching the kernel
@@ -528,17 +657,18 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
         goto Error;
     }
 
-	cudaStatus = cudaMemcpy(cGreen, dev_cRed, rows*columns * sizeof(int), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(cGreen, dev_cGreen, rows*columns * sizeof(int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
 
-	cudaStatus = cudaMemcpy(cBlue, dev_cRed, rows*columns * sizeof(int), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(cBlue, dev_cBlue, rows*columns * sizeof(int), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
+
 
 	/*float avg[4] = { 0 };
 	float *average = avg;
