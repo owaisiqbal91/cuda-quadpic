@@ -1,11 +1,20 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <float.h>
+#include <time.h>
+#include <windows.h>
+#include <iostream>
+
 #include "Cimg.h"
 
 #include <stdio.h>
 
-#define noOfIterations 2500
+#define noOfIterations 1000
 #define noOfQuads noOfIterations*3
 
 #define rows 2048//image rows
@@ -15,6 +24,52 @@
 #define noOfThreadInBlockBy2 noOfThreadsInBlock/2
 //#define gridDim3 dim3(noOfBlocks/2, noOfBlocks/2)
 //#define blockDim3 dim3(noOfThreadInBlockBy2, noOfThreadInBlockBy2)
+
+#if defined(_MSC_VER) || defined(_MSC_EXTENSIONS)
+#define DELTA_EPOCH_IN_MICROSECS  11644473600000000Ui64
+#else
+#define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
+#endif
+struct timezone
+{
+	int  tz_minuteswest; /* minutes W of Greenwich */
+	int  tz_dsttime;     /* type of dst correction */
+};
+
+int gettimeofday(struct timeval *tv, struct timezone *tz)
+{
+	FILETIME ft;
+	unsigned __int64 tmpres = 0;
+	static int tzflag;
+
+	if (NULL != tv)
+	{
+		GetSystemTimeAsFileTime(&ft);
+
+		tmpres |= ft.dwHighDateTime;
+		tmpres <<= 32;
+		tmpres |= ft.dwLowDateTime;
+
+		/*converting file time to unix epoch*/
+		tmpres -= DELTA_EPOCH_IN_MICROSECS;
+		tmpres /= 10;  /*convert into microseconds*/
+		tv->tv_sec = (long)(tmpres / 1000000UL);
+		tv->tv_usec = (long)(tmpres % 1000000UL);
+	}
+
+	if (NULL != tz)
+	{
+		if (!tzflag)
+		{
+			_tzset();
+			tzflag++;
+		}
+		tz->tz_minuteswest = _timezone / 60;
+		tz->tz_dsttime = _daylight;
+	}
+
+	return 0;
+}
 
 using namespace cimg_library;
 
@@ -30,7 +85,7 @@ __device__ int getAbsoluteIndex(int threadIndexX, int threadIndexY, int quadStar
 	return xIndexInGrid + yIndexInGrid*rows;
 }
 
-__global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY)
+__global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *aBlue, int *mutex, int* averageRed, int* averageGreen, int* averageBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY)
 {
 	//int threadAbsX = (threadIdx.x + blockDim.x*blockIdx.x) + quadStartX;
 	//int threadAbsY = (threadIdx.y + blockDim.y*blockIdx.y) + quadStartY;
@@ -79,15 +134,15 @@ __global__ void getAverageKernel(const int *aRed, const int *aGreen, const int *
 		if (threadIndex == 0) {
 			int totalInQuad = (quadEndX - quadStartX + 1)*(quadEndY - quadStartY + 1);
 			while (atomicCAS(mutex + quadNo, 0, 1) != 0);  //lock
-			averageRed[quadNo] += (float)sumRed[0] / totalInQuad;
-			averageGreen[quadNo] += (float)sumGreen[0] / totalInQuad;
-			averageBlue[quadNo] += (float)sumBlue[0] / totalInQuad;
+			averageRed[quadNo] += sumRed[0] / totalInQuad;
+			averageGreen[quadNo] += sumGreen[0] / totalInQuad;
+			averageBlue[quadNo] += sumBlue[0] / totalInQuad;
 			atomicExch(mutex + quadNo, 0);  //unlock
 		}
 	//}
 }
 
-__global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const int *aBlue, int *cRed, int *cGreen, int *cBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, float* scoreRed, float* scoreGreen, float* scoreBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY) {
+__global__ void getScoreAndPaintKernel(const int *aRed, const int *aGreen, const int *aBlue, int *cRed, int *cGreen, int *cBlue, int *mutex, int* averageRed, int* averageGreen, int* averageBlue, float* scoreRed, float* scoreGreen, float* scoreBlue, int quadNo, int quadStartX, int quadStartY, int quadEndX, int quadEndY) {
 
 	//int threadAbsX = (threadIdx.x + blockDim.x*blockIdx.x) + quadStartX;
 	//int threadAbsY = (threadIdx.y + blockDim.y*blockIdx.y) + quadStartY;
@@ -220,7 +275,7 @@ __device__ struct quad {
 };
 
 
-__global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const int *aRed, const int *aGreen, const int *aBlue, int *mutex, float* averageRed, float* averageGreen, float* averageBlue, float *scoreRed, float *scoreGreen, float *scoreBlue, float* globalScores, float* maxScore, int* maxScoreIndex) {
+__global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const int *aRed, const int *aGreen, const int *aBlue, int *mutex, int* averageRed, int* averageGreen, int* averageBlue, float *scoreRed, float *scoreGreen, float *scoreBlue, float* globalScores, float* maxScore, int* maxScoreIndex) {
 
 	quad quads[noOfQuads];
 	quads[0].startX = 0;
@@ -243,7 +298,7 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 	int blockDimSize = 32;
 	dim3 blockdim = dim3(blockDimSize, blockDimSize);
 	int i;
-	for (i = 0; i < 1000; i++) {
+	for (i = 0; i < noOfIterations; i++) {
 		//printf("\n\n----------------New SPLIT -----------------");
 		int quadW = (quads[quadToSplit].endX - quads[quadToSplit].startX + 1) / 2;
 		int quadH = (quads[quadToSplit].endY - quads[quadToSplit].startY + 1) / 2;
@@ -346,12 +401,6 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 		globalScores[currentTotalQuads - 1] *= powf(quadH*quadW, 0.25);
 		//printf("\nScores: %f, %f, %f, %f", globalScores[quadToSplit], globalScores[currentTotalQuads - 3], globalScores[currentTotalQuads - 2], globalScores[currentTotalQuads - 1]);
 
-		/*int h;
-		printf("\nScores ");
-		for (h = 0; h < currentTotalQuads; h++) {
-			printf("%f ", globalScores[h]);
-		}*/
-
 		//find max
 		int maxKernelBlockSize = 1024;// currentTotalQuads > 1024 ? 1024 : currentTotalQuads;
 		maxKernelBlockSize = maxKernelBlockSize % 2 == 0 ? maxKernelBlockSize : maxKernelBlockSize + 1;
@@ -360,17 +409,7 @@ __global__ void kernelToRuleThemAll(int *cRed, int *cGreen, int *cBlue, const in
 		cudaDeviceSynchronize();
 		quadToSplit = maxScoreIndex[0];
 
-		/*int k = 0;
-		for (k = 0; k < 256; k++) {
-			printf("\n%d %d %d", cRed[k], cGreen[k], cBlue[k]);
-		}*/
 	}
-
-	//delete this
-	/*int j = 0;
-	for (j = 0; j < currentTotalQuads; j++) {
-		printf("\nQuad[%d] : (%d, %d) to (%d, %d)", j, quads[j].startX, quads[j].startY, quads[j].endX, quads[j].endY);
-	}*/
 }
 
 int main()
@@ -426,7 +465,12 @@ int main()
 	int *cBlue = new int[rows*columns];
 
     // Add vectors in parallel.
+	struct timeval time_start, time_end;
+	gettimeofday(&time_start, NULL);
     cudaError_t cudaStatus = generateOutputWithCuda(cRed, cGreen, cBlue, indataR, indataG, indataB, arraySize);
+	gettimeofday(&time_end, NULL);
+	printf("\ntime taken to execute GPU version: %ld", ((time_end.tv_sec * 1000000 + time_end.tv_usec) - (time_start.tv_sec * 1000000 + time_start.tv_usec)));
+	printf("\ntime taken to execute GPU version: %ld start %ld end %ld", (time_end.tv_sec - time_start.tv_sec), time_start.tv_sec, time_end.tv_sec);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "generateOutputWithCuda failed!");
         return 1;
@@ -468,9 +512,9 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
 	int *dev_cBlue = 0;
 
 	int *dev_mutex = 0;
-	float *dev_averageRed = 0;
-	float *dev_averageGreen = 0;
-	float *dev_averageBlue = 0;
+	int *dev_averageRed = 0;
+	int *dev_averageGreen = 0;
+	int *dev_averageBlue = 0;
 	float *dev_scoreRed = 0;
 	float *dev_scoreGreen = 0;
 	float *dev_scoreBlue = 0;
@@ -530,19 +574,19 @@ cudaError_t generateOutputWithCuda(int *cRed, int *cGreen, int *cBlue, const int
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&dev_averageRed, 4 * sizeof(float));
+	cudaStatus = cudaMalloc((void**)&dev_averageRed, 4 * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&dev_averageGreen, 4 * sizeof(float));
+	cudaStatus = cudaMalloc((void**)&dev_averageGreen, 4 * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
 
-	cudaStatus = cudaMalloc((void**)&dev_averageBlue, 4 * sizeof(float));
+	cudaStatus = cudaMalloc((void**)&dev_averageBlue, 4 * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
